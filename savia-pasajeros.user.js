@@ -5,6 +5,8 @@
 // @description  Extracción con reglas de ordenamiento ADL/INF/CHD y limpieza CUIT
 // @author       Juan Lucas
 // @match        http://www.savia3.com.ar:8080/savia/*
+// @match        https://savia3.com.ar/*
+// @match        http://savia3.com.ar/*
 // @updateURL    https://raw.githubusercontent.com/jlucasgarcia/savia-pasajeros/main/savia-pasajeros.user.js
 // @downloadURL  https://raw.githubusercontent.com/jlucasgarcia/savia-pasajeros/main/savia-pasajeros.user.js
 // @grant        GM_setClipboard
