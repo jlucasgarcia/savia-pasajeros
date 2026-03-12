@@ -166,7 +166,6 @@
 
         if (host.includes('delfos')) {
             pasajeros = extraerDelfos();
-            // Fallback a estrategia genérica si no encontró nada
             if (pasajeros.length === 0) pasajeros = extraerMitikaStyle();
         } else {
             pasajeros = extraerMitikaStyle();
