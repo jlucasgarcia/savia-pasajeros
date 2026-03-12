@@ -1,121 +1,217 @@
 // ==UserScript==
-// @name         Savia - Pasajeros Ola & Mitika (Expeditus)
-// @namespace    http://tampermonkey.net/
-// @version      9.0
-// @description  Extracción con reglas de ordenamiento ADL/INF/CHD y limpieza CUIT
-// @author       Juan Lucas
-// @match        http://www.savia3.com.ar:8080/savia/*
-// @match        https://savia3.com.ar/*
-// @match        http://savia3.com.ar/*
-// @updateURL    https://raw.githubusercontent.com/jlucasgarcia/savia-pasajeros/main/savia-pasajeros.user.js
-// @downloadURL  https://raw.githubusercontent.com/jlucasgarcia/savia-pasajeros/main/savia-pasajeros.user.js
+// @name         Expeditus · Extractor de Pasajeros (Delfos / Mitika / TipTravel)
+// @namespace    https://github.com/jlucasgarcia/expeditus-passenger-extractor
+// @version      6.1
+// @description  Extrae pasajeros de reservas confirmadas y los copia como JSON al portapapeles. Compatible con Delfos, Mitika y TipTravel.
+// @author       Expeditus Team
+// @license      MIT
+// @match        https://mitika.travel/secure/trip-detail.xhtml*
+// @match        https://www.delfos.tur.ar/secure/trip-detail.xhtml*
+// @match        https://www.tiptravelya.com/secure/trip-detail.xhtml*
 // @grant        GM_setClipboard
+// @grant        GM_addStyle
+// @homepageURL  https://github.com/jlucasgarcia/expeditus-passenger-extractor
+// @supportURL   https://github.com/jlucasgarcia/expeditus-passenger-extractor/issues
+// @updateURL    https://raw.githubusercontent.com/jlucasgarcia/expeditus-passenger-extractor/main/expeditus-extractor.user.js
+// @downloadURL  https://raw.githubusercontent.com/jlucasgarcia/expeditus-passenger-extractor/main/expeditus-extractor.user.js
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    const clean = (s) => s.replace(/\D/g, '');
+    GM_addStyle(`
+        #btn-extraer-rebooking-expeditus {
+            position: fixed;
+            bottom: 30px;
+            left: 30px;
+            z-index: 10000;
+            background-color: #1A1A1A;
+            color: #FFFFFF;
+            border: 2px solid #000000;
+            font-family: 'Segoe UI', sans-serif;
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 1.2px;
+            text-transform: uppercase;
+            padding: 14px 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            box-shadow: 0 4px 0px #FF6D00;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        #btn-extraer-rebooking-expeditus:hover {
+            background-color: #FF6D00;
+            color: #1A1A1A;
+            box-shadow: 0 2px 0px #000000;
+            transform: translateY(2px);
+        }
+        #expeditus-toast {
+            position: fixed;
+            bottom: 90px;
+            left: 30px;
+            z-index: 10001;
+            background: #1A1A1A;
+            color: #FF6D00;
+            font-family: 'Segoe UI', sans-serif;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 10px 18px;
+            border-radius: 4px;
+            display: none;
+            border-left: 3px solid #FF6D00;
+        }
+    `);
 
-    const formatDoc = (tipo, num) => {
-        const d = clean(num);
-        return (tipo.includes("CUIT") || tipo.includes("CUIL")) ? d.substring(2, 10) : d;
-    };
+    // ─── Estrategia Delfos ────────────────────────────────────────────────────
+    // Estructura DOM:
+    //   div.o-block__item
+    //     span "Pasajero N"
+    //     div > div.o-group > b "APELLIDO, NOMBRE"
+    //     em "DNI"
+    //     em "DD/MM/YYYY"
+    //     em "email" (opcional)
+    function extraerDelfos() {
+        const pasajeros = [];
 
-    const getRawData = () => {
-        const rows = Array.from(document.querySelectorAll('.z-row, tr'));
-        let paxs = [];
-        rows.forEach(r => {
-            const labels = Array.from(r.querySelectorAll('.z-label, .z-listcell-content'));
-            if (labels.length >= 2 && (labels[0].innerText.includes("TIT") || labels[0].innerText.includes("ACO"))) {
-                const parts = labels[1].innerText.split(' - ');
-                const [ape, nom] = parts[0].split(', ').map(s => s.trim());
-                const docInfo = parts[1] || "";
-                const edadStr = labels[2]?.innerText || "";
-                const nac = edadStr.match(/\((.*?)\)/)?.[1] || "";
-                const edad = parseInt(edadStr.split(' ')[0]) || 0;
+        document.querySelectorAll('div.o-block__item').forEach(bloque => {
+            const spanPasajero = bloque.querySelector('span');
+            if (!spanPasajero || !/Pasajero\s+\d+/i.test(spanPasajero.innerText)) return;
 
-                paxs.push({
-                    rol: labels[0].innerText.trim(),
-                    nom, ape,
-                    tipoDoc: docInfo.split(' ')[0] || "DNI",
-                    numDoc: docInfo.split(' ')[1] || "",
-                    nac, edad
-                });
-            }
+            const tagB = bloque.querySelector('b');
+            if (!tagB) return;
+            const nombreCompleto = tagB.innerText.trim();
+            if (!nombreCompleto.includes(',')) return;
+
+            const ems   = [...bloque.querySelectorAll('em')].map(e => e.innerText.trim());
+            const dni   = ems.find(e => /^\d{7,9}$/.test(e));
+            const fecha = ems.find(e => /^\d{2}\/\d{2}\/\d{4}$/.test(e));
+            const email = ems.find(e => /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(e));
+
+            if (!dni || !fecha) return;
+
+            const partes   = nombreCompleto.split(',');
+            const pasajero = {
+                "nombre":         partes[1].trim().toUpperCase(),
+                "apellidos":      partes[0].trim().toUpperCase(),
+                "documentType":   "DNI",
+                "documentNumber": dni,
+                "country":        "AR",
+                "birthDate":      fecha,
+            };
+            if (email) pasajero.email = email.toLowerCase();
+
+            pasajeros.push(pasajero);
         });
-        return paxs;
-    };
 
-    const copiarOla = () => {
-        const paxs = getRawData();
-        const hoy = new Date();
-        const v = { d: hoy.getDate().toString(), m: (hoy.getMonth()+1).toString(), y: (hoy.getFullYear()+2).toString() };
+        return pasajeros;
+    }
 
-        // Regla OLA: 1. ADL (>12), 2. INF (0-1), 3. CHD (2-11)
-        const ordenado = paxs.sort((a, b) => {
-            const cat = (e) => e >= 12 ? 1 : (e <= 1 ? 2 : 3);
-            return cat(a.edad) - cat(b.edad);
-        });
+    // ─── Estrategia Mitika / TipTravel ───────────────────────────────────────
+    // Estructura DOM: bloques con texto multilinea
+    //   "Pasajero N\nAPELLIDO, NOMBRE\nDNI DD/MM/YYYY"
+    function extraerMitikaStyle() {
+        const pasajeros = [];
 
-        const out = {
-            pasajeros: ordenado.map(p => {
-                const [d, m, y] = p.nac.split('/');
-                const item = {
-                    nombre: p.nom, apellido: p.ape,
-                    documento: formatDoc(p.tipoDoc, p.numDoc),
-                    genero: p.nom.endsWith('A') ? "F" : "M",
-                    nacimiento: { d: parseInt(d).toString(), m: parseInt(m).toString(), y },
-                    vencDoc: v
+        ['.o-block__item', '.ui-block-b', '.ui-grid-a'].forEach(selector => {
+            document.querySelectorAll(selector).forEach(bloque => {
+                const texto = bloque.innerText.trim();
+                if (!texto.includes("Pasajero") || !/\d{2}\/\d{2}\/\d{4}/.test(texto)) return;
+
+                const lineas      = texto.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+                const lineaNombre = lineas.find(l => l.includes(',') && !l.includes('/') && !l.includes('@'));
+                const lineaDatos  = lineas.find(l => /\d{7,9}/.test(l) && /\d{2}\/\d{2}\/\d{4}/.test(l));
+
+                if (!lineaNombre || !lineaDatos) return;
+
+                const partes     = lineaNombre.split(',');
+                const datosMatch = lineaDatos.match(/(\d{7,9})\s+(\d{2}\/\d{2}\/\d{4})/);
+                const emailMatch = texto.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+
+                if (partes.length < 2 || !datosMatch) return;
+
+                const pasajero = {
+                    "nombre":         partes[1].trim().toUpperCase(),
+                    "apellidos":      partes[0].trim().toUpperCase(),
+                    "documentType":   "DNI",
+                    "documentNumber": datosMatch[1],
+                    "country":        "AR",
+                    "birthDate":      datosMatch[2],
                 };
-                if (p.tipoDoc.includes("CUIT")) item.cuit = clean(p.numDoc);
-                return item;
-            })
-        };
-        GM_setClipboard(JSON.stringify(out, null, 2));
-        alert("JSON Pasajeros Ola copiado (" + out.pasajeros.length + " paxs)");
-    };
+                if (emailMatch) pasajero.email = emailMatch[0].toLowerCase();
 
-    const copiarMitika = () => {
-        const paxs = getRawData();
-        // Regla Mitika: 1. TIT, 2. ACOs orden aparición, 3. Niños menor a mayor edad [cite: 311, 314]
-        const adultos = paxs.filter(p => p.edad >= 18 || p.rol === "TIT").sort((a,b) => a.rol === "TIT" ? -1 : 0);
-        const niños = paxs.filter(p => p.edad < 18 && p.rol !== "TIT").sort((a,b) => a.edad - b.edad);
-        const final = [...adultos, ...niños];
+                pasajeros.push(pasajero);
+            });
+        });
 
-        const out = {
-            passengers: final.map((p, i) => ({
-                nombre: p.nom, apellidos: p.ape,
-                documentType: p.tipoDoc.includes("PAS") ? "PASSPORT" : "DNI",
-                documentNumber: formatDoc(p.tipoDoc, p.numDoc),
-                birthDate: p.nac,
-                ...(i === 0 ? { country: "AR", email: "gmv.ludmila@gmail.com" } : {})
-            }))
-        };
-        GM_setClipboard(JSON.stringify(out, null, 2));
-        alert("JSON Pasajeros Mitika copiado (" + out.passengers.length + " paxs)");
-    };
+        return pasajeros;
+    }
 
-    const inyectar = () => {
-        if (document.getElementById('exp-tools')) return;
-        const c = document.createElement('div');
-        c.id = 'exp-tools';
-        c.style = "position:fixed; top:150px; right:20px; z-index:2147483647; display:flex; flex-direction:column; gap:10px;";
+    // ─── Deduplicar por número de documento ──────────────────────────────────
+    function deduplicar(lista) {
+        const vistos = new Set();
+        return lista.filter(p => {
+            if (vistos.has(p.documentNumber)) return false;
+            vistos.add(p.documentNumber);
+            return true;
+        });
+    }
 
-        const btn = (t, cl, fn) => {
-            const b = document.createElement('button');
-            b.innerText = t;
-            b.style = `padding:12px; background:${cl}; color:white; border:none; border-radius:6px; font-weight:bold; cursor:pointer; box-shadow:0 2px 5px rgba(0,0,0,0.2);`;
-            b.onclick = fn;
-            return b;
-        };
+    // ─── Extraer según plataforma detectada ──────────────────────────────────
+    function extraerJSON() {
+        const host = location.hostname;
+        let pasajeros = [];
 
-        c.appendChild(btn("Pasajeros Ola", "#E67E22", copiarOla));
-        c.appendChild(btn("Pasajeros Mitika/Delfos/Tip", "#2980B9", copiarMitika));
-        document.body.appendChild(c);
-    };
+        if (host.includes('delfos')) {
+            pasajeros = extraerDelfos();
+            // Fallback a estrategia genérica si no encontró nada
+            if (pasajeros.length === 0) pasajeros = extraerMitikaStyle();
+        } else {
+            pasajeros = extraerMitikaStyle();
+        }
 
-    const obs = new MutationObserver(inyectar);
-    obs.observe(document.body, { childList: true, subtree: true });
-    inyectar();
+        pasajeros = deduplicar(pasajeros);
+
+        if (pasajeros.length === 0) {
+            mostrarToast('⚠ No se encontraron pasajeros');
+            return;
+        }
+
+        const json = JSON.stringify({ passengers: pasajeros }, null, 2);
+        GM_setClipboard(json);
+        mostrarToast(`✓ ${pasajeros.length} pasajero(s) copiado(s)`);
+        console.log('[Expeditus] JSON copiado al portapapeles:\n', json);
+    }
+
+    // ─── Toast de feedback visual ─────────────────────────────────────────────
+    function mostrarToast(msg) {
+        let toast = document.getElementById('expeditus-toast');
+        if (!toast) {
+            toast = document.createElement('div');
+            toast.id = 'expeditus-toast';
+            document.body.appendChild(toast);
+        }
+        toast.textContent = msg;
+        toast.style.display = 'block';
+        setTimeout(() => { toast.style.display = 'none'; }, 3000);
+    }
+
+    // ─── Crear botón flotante ─────────────────────────────────────────────────
+    function crearBoton() {
+        if (document.getElementById('btn-extraer-rebooking-expeditus')) return;
+        const btn = document.createElement('button');
+        btn.id = 'btn-extraer-rebooking-expeditus';
+        btn.innerHTML = '⬡ EXPEDITUS · COPIAR PASAJEROS';
+        btn.addEventListener('click', extraerJSON);
+        document.body.appendChild(btn);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', crearBoton);
+    } else {
+        crearBoton();
+    }
+
 })();
